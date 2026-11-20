@@ -24,6 +24,8 @@ artifacts/
 reports/
 backend/artifacts/
 backend/reports/
+storage/
+backend/storage/
 *.log
 
 # IDE & OS

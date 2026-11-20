@@ -364,7 +364,73 @@ class PlaywrightMCPClient:
         await event_bus.publish(LogEvent(source="MCP", message=msg, data={"action": "fill", "selector": selector, "value": redacted_val, "url": self._mock_url}))
         if self._is_real and self._page and self._runner:
             async def _do_fill():
-                # 1. Parse comma-separated parts cleanly to prevent invalid CSS selectors
+                target_lower = selector.lower()
+
+                # ── 1. JEV-FIRST DIRECT NODE RESOLUTION (<25ms) ──
+                try:
+                    from jev_ultrafast.browser import READ_STATE
+                    state = await self._page.evaluate(READ_STATE)
+                    if state and "actions" in state:
+                        input_action = None
+                        if "pass" in target_lower:
+                            input_action = next(
+                                (a for a in state["actions"] if a.get("kind") in ("fill", "input") and (
+                                    "pass" in (a.get("label") or "").lower() or
+                                    a.get("role") == "password" or
+                                    a.get("node") == 2
+                                )),
+                                None
+                            )
+                        elif any(k in target_lower for k in ["user", "email", "login"]):
+                            input_action = next(
+                                (a for a in state["actions"] if a.get("kind") in ("fill", "input") and any(
+                                    k in (a.get("label") or "").lower() for k in ["email", "user", "name", "login"]
+                                )),
+                                None
+                            )
+                        elif any(k in target_lower for k in ["otp", "2fa", "code", "token"]):
+                            input_action = next(
+                                (a for a in state["actions"] if a.get("kind") in ("fill", "input") and any(
+                                    k in (a.get("label") or "").lower() for k in ["code", "otp", "2fa", "token"]
+                                )),
+                                None
+                            )
+
+                        if not input_action:
+                            clean_t = selector.replace('input[', '').replace(']', '').replace('"', '').replace("'", "").replace('#', '').strip().lower()
+                            if clean_t:
+                                input_action = next(
+                                    (a for a in state["actions"] if a.get("kind") in ("fill", "input") and (
+                                        clean_t in (a.get("label") or "").lower() or
+                                        (a.get("label") or "").lower() in clean_t
+                                    )),
+                                    None
+                                )
+
+                        if not input_action:
+                            input_action = next((a for a in state["actions"] if a.get("kind") in ("fill", "input")), None)
+
+                        if input_action:
+                            r = input_action.get("rect", {})
+                            cx = r.get("x", 0) + r.get("w", 0) / 2
+                            cy = r.get("y", 0) + r.get("h", 0) / 2
+                            if cx > 0 and cy > 0:
+                                await self._page.evaluate(
+                                    "({x, y, w, h}) => { if (window.__moveCursor) window.__moveCursor(x, y); if (window.__ripple) window.__ripple(x, y); if (window.__highlight) window.__highlight(x - w/2, y - h/2, w, h); }",
+                                    {"x": cx, "y": cy, "w": r.get("w", 200), "h": r.get("h", 35)}
+                                )
+                                await asyncio.sleep(0.15)
+                            await self._page.evaluate(
+                                "(args) => { const e = window.__jevFast?.nodes.get(args.node); if (e) { e.scrollIntoView({block:'nearest', inline:'nearest'}); e.focus(); e.value = args.val; e.dispatchEvent(new Event('input', {bubbles:true})); e.dispatchEvent(new Event('change', {bubbles:true})); } }",
+                                {"node": input_action.get("node"), "val": val_str}
+                            )
+                            await asyncio.sleep(0.2)
+                            logger.info(f"[JEV] Action Completed: fill node {input_action.get('node')} '{input_action.get('label')}'")
+                            return {"filled": f"jev-node:{input_action.get('label', 'input')}", "source": "JEV"}
+                except Exception as jev_e:
+                    logger.debug(f"[JEV] Node fill resolution error: {jev_e}")
+
+                # ── 2. PLAYWRIGHT LOCATOR FALLBACK ──
                 raw_parts = [s.strip() for s in selector.split(',') if s.strip()]
                 target_selectors: List[str] = []
                 for p in raw_parts:
@@ -379,7 +445,6 @@ class PlaywrightMCPClient:
                             f'.{clean_part}'
                         ])
 
-                target_lower = selector.lower()
                 if "user" in target_lower or "email" in target_lower:
                     target_selectors.extend([
                         'input[type="email"]',
@@ -410,13 +475,12 @@ class PlaywrightMCPClient:
                         'input[placeholder*="code" i]',
                     ])
 
-                # 2. Wait for first viable element to appear/become visible
                 target_loc = None
                 matched_sel = selector
                 for sel in target_selectors:
                     try:
                         loc = self._page.locator(sel).first
-                        await loc.wait_for(state="visible", timeout=1200)
+                        await loc.wait_for(state="visible", timeout=600)
                         target_loc = loc
                         matched_sel = sel
                         break
@@ -430,37 +494,6 @@ class PlaywrightMCPClient:
                         except Exception:
                             continue
 
-                # 3. Jev-ultrafast intelligent input fallback
-                if not target_loc:
-                    try:
-                        from jev_ultrafast.browser import READ_STATE
-                        state = await self._page.evaluate(READ_STATE)
-                        if state and "actions" in state:
-                            input_action = None
-                            if "pass" in target_lower:
-                                input_action = next((a for a in state["actions"] if a.get("kind") == "input" and "pass" in (a.get("label") or "").lower()), None)
-                            elif "user" in target_lower or "email" in target_lower:
-                                input_action = next((a for a in state["actions"] if a.get("kind") == "input" and any(k in (a.get("label") or "").lower() for k in ["email", "user"])), None)
-                            if not input_action:
-                                input_action = next((a for a in state["actions"] if a.get("kind") == "input"), None)
-                            
-                            if input_action:
-                                r = input_action.get("rect", {})
-                                cx = r.get("x", 0) + r.get("w", 0) / 2
-                                cy = r.get("y", 0) + r.get("h", 0) / 2
-                                if cx > 0 and cy > 0:
-                                    await self._page.evaluate("({x, y, w, h}) => { if (window.__moveCursor) window.__moveCursor(x, y); if (window.__ripple) window.__ripple(x, y); if (window.__highlight) window.__highlight(x - w/2, y - h/2, w, h); }", {"x": cx, "y": cy, "w": r.get("w", 200), "h": r.get("h", 35)})
-                                    await asyncio.sleep(0.2)
-                                await self._page.evaluate(
-                                    "(args) => { const e = window.__jevFast?.nodes.get(args.node); if (e) { e.focus(); e.value = args.val; e.dispatchEvent(new Event('input', {bubbles:true})); e.dispatchEvent(new Event('change', {bubbles:true})); } }",
-                                    {"node": input_action.get("node"), "val": val_str}
-                                )
-                                await asyncio.sleep(0.3)
-                                return {"filled": f"jev-node:{input_action.get('label', 'input')}"}
-                    except Exception as jev_e:
-                        logger.debug(f"[JEV] Node fill fallback error: {jev_e}")
-
-                # 4. Visible execution in browser
                 if target_loc:
                     try:
                         await target_loc.scroll_into_view_if_needed(timeout=1000)
@@ -472,7 +505,7 @@ class PlaywrightMCPClient:
                         cx = box["x"] + box["width"] / 2
                         cy = box["y"] + box["height"] / 2
                         await self._page.evaluate("({x, y, w, h}) => { if (window.__moveCursor) window.__moveCursor(x, y); if (window.__highlight) window.__highlight(x - w/2, y - h/2, w, h); }", {"x": cx, "y": cy, "w": box["width"], "h": box["height"]})
-                        await asyncio.sleep(0.2)
+                        await asyncio.sleep(0.15)
                         await self._page.evaluate("({x, y}) => { if (window.__ripple) window.__ripple(x, y); }", {"x": cx, "y": cy})
 
                     try:
@@ -499,10 +532,10 @@ class PlaywrightMCPClient:
 
                     if val_str:
                         try:
-                            await target_loc.press_sequentially(val_str, delay=35)
+                            await target_loc.press_sequentially(val_str, delay=25)
                         except Exception:
                             await target_loc.fill(val_str)
-                    await asyncio.sleep(0.25)
+                    await asyncio.sleep(0.2)
                     return {"filled": matched_sel}
 
                 return {"filled": selector}
@@ -518,6 +551,107 @@ class PlaywrightMCPClient:
         logger.info(f"[MCP] {msg}")
         if self._is_real and self._page and self._runner:
             async def _do_click():
+                target_lower = selector.lower()
+
+                # ── 1. JEV-FIRST DIRECT NODE RESOLUTION (<25ms) ──
+                try:
+                    from jev_ultrafast.browser import READ_STATE
+                    from jev_ultrafast.model import action_space
+                    state = await self._page.evaluate(READ_STATE)
+                    if state and "actions" in state:
+                        click_action = None
+
+                        # A. Eye toggle button resolution
+                        if any(w in target_lower for w in ["eye", "toggle", "password", "visibility", "icon"]):
+                            click_action = next(
+                                (a for a in state["actions"] if a.get("kind") == "click" and (
+                                    a.get("node") == 2 or
+                                    "eye" in (a.get("label") or "").lower() or
+                                    "password" in (a.get("label") or "").lower() or
+                                    a.get("label") == "button" or
+                                    "toggle" in (a.get("label") or "").lower()
+                                )),
+                                None
+                            )
+
+                        # B. Submit / Login / Sign In primary CTA
+                        if not click_action and any(w in target_lower for w in ["submit", "login", "signin", "sign in", "btn"]):
+                            click_action = next(
+                                (a for a in state["actions"] if a.get("kind") == "click" and any(
+                                    s in (a.get("label") or "").lower() for s in ["login", "sign in", "submit", "log in", "continue"]
+                                )),
+                                None
+                            )
+                            if not click_action:
+                                click_action = next(
+                                    (a for a in state["actions"] if a.get("kind") == "click" and a.get("role") in ("button", "submit")),
+                                    None
+                                )
+
+                        # C. Dropdown / unit button trigger
+                        if not click_action and ("unit" in target_lower or "select" in target_lower):
+                            click_action = next(
+                                (a for a in state["actions"] if a.get("kind") == "click" and any(
+                                    s in (a.get("label") or "").lower() for s in ["unit", "select"]
+                                )),
+                                None
+                            )
+
+                        # D. Logout / Avatar / Menu
+                        if not click_action and any(w in target_lower for w in ["logout", "avatar", "user", "profile"]):
+                            click_action = next(
+                                (a for a in state["actions"] if a.get("kind") == "click" and any(
+                                    s in (a.get("label") or "").lower() for s in ["logout", "avatar", "profile", "user"]
+                                )),
+                                None
+                            )
+
+                        # E. General action_space match
+                        if not click_action:
+                            try:
+                                _, targets, _ = action_space(state["actions"])
+                                click_targets = targets.get("CLICK", {})
+                                for tid, act in click_targets.items():
+                                    lbl = (act.get("label") or "").lower()
+                                    if target_lower in lbl or lbl in target_lower:
+                                        click_action = act
+                                        break
+                            except Exception:
+                                pass
+
+                        # F. Direct label substring match
+                        if not click_action:
+                            clean_t = selector.replace('button:has-text("', '').replace('")', '').replace('button', '').replace('[', '').replace(']', '').replace('"', '').strip().lower()
+                            if clean_t:
+                                click_action = next(
+                                    (a for a in state["actions"] if a.get("kind") == "click" and (
+                                        clean_t in (a.get("label") or "").lower() or
+                                        (a.get("label") or "").lower() in clean_t
+                                    )),
+                                    None
+                                )
+
+                        if click_action:
+                            r = click_action.get("rect", {})
+                            cx = r.get("x", 0) + r.get("w", 0) / 2
+                            cy = r.get("y", 0) + r.get("h", 0) / 2
+                            if cx > 0 and cy > 0:
+                                await self._page.evaluate(
+                                    "({x, y}) => { if (window.__moveCursor) window.__moveCursor(x, y); if (window.__ripple) window.__ripple(x, y); }",
+                                    {"x": cx, "y": cy}
+                                )
+                                await asyncio.sleep(0.15)
+                            await self._page.evaluate(
+                                "(action) => { const e = window.__jevFast?.nodes.get(action.node); if (e) { e.scrollIntoView({block:'nearest', inline:'nearest'}); e.click(); } }",
+                                click_action
+                            )
+                            await asyncio.sleep(0.25)
+                            logger.info(f"[JEV] Action Completed: click node {click_action.get('node')} '{click_action.get('label')}'")
+                            return {"clicked": f"jev-node:{click_action.get('label', 'button')}", "url": self._page.url, "source": "JEV"}
+                except Exception as jev_e:
+                    logger.debug(f"[JEV] Node click resolution error: {jev_e}")
+
+                # ── 2. PLAYWRIGHT LOCATOR FALLBACK ──
                 raw_parts = [s.strip() for s in selector.split(',') if s.strip()]
                 target_selectors: List[str] = []
                 for p in raw_parts:
@@ -532,7 +666,6 @@ class PlaywrightMCPClient:
                             f'.{clean_part}'
                         ])
 
-                # Eye toggle button resolution
                 if any(w in selector.lower() for w in ["eye", "toggle", "password", "visibility", "icon"]):
                     target_selectors.extend([
                         'button:has(svg):near(input[type="password"])',
@@ -545,9 +678,7 @@ class PlaywrightMCPClient:
                         '#toggle-password',
                         'button:has(svg)',
                     ])
-
-                # Submit / Login button resolution
-                if any(w in selector.lower() for w in ["submit", "login", "signin", "btn"]):
+                elif any(w in selector.lower() for w in ["submit", "login", "signin", "btn"]):
                     target_selectors.extend([
                         'button[type="submit"]',
                         'button:has-text("Login")',
@@ -558,9 +689,7 @@ class PlaywrightMCPClient:
                         'input[type="submit"]',
                         '#login-submit',
                     ])
-
-                # Unit dropdown resolution
-                if "unit" in selector.lower() or "select" in selector.lower():
+                elif "unit" in selector.lower() or "select" in selector.lower():
                     target_selectors.extend([
                         'select',
                         '[role="combobox"]',
@@ -569,13 +698,12 @@ class PlaywrightMCPClient:
                         '#unit',
                     ])
 
-                # 2. Wait for target selector
                 target_loc = None
                 matched_sel = selector
                 for sel in target_selectors:
                     try:
                         loc = self._page.locator(sel).first
-                        await loc.wait_for(state="visible", timeout=1200)
+                        await loc.wait_for(state="visible", timeout=600)
                         target_loc = loc
                         matched_sel = sel
                         break
@@ -589,7 +717,6 @@ class PlaywrightMCPClient:
                         except Exception:
                             continue
 
-                # 3. If target_loc found, execute prominent visual click
                 if target_loc:
                     try:
                         await target_loc.scroll_into_view_if_needed(timeout=1000)
@@ -601,7 +728,7 @@ class PlaywrightMCPClient:
                         cx = box["x"] + box["width"] / 2
                         cy = box["y"] + box["height"] / 2
                         await self._page.evaluate("({x, y}) => { if (window.__moveCursor) window.__moveCursor(x, y); }", {"x": cx, "y": cy})
-                        await asyncio.sleep(0.2)
+                        await asyncio.sleep(0.15)
                         await self._page.evaluate("({x, y}) => { if (window.__ripple) window.__ripple(x, y); }", {"x": cx, "y": cy})
 
                     try:
@@ -616,63 +743,9 @@ class PlaywrightMCPClient:
                     except Exception:
                         pass
 
-                    await target_loc.click(timeout=2500)
-                    await asyncio.sleep(0.35)
+                    await target_loc.click(timeout=1500)
+                    await asyncio.sleep(0.25)
                     return {"clicked": matched_sel, "url": self._page.url}
-
-                # 4. Jev-ultrafast intelligent node fallback
-                try:
-                    from jev_ultrafast.browser import READ_STATE
-                    state = await self._page.evaluate(READ_STATE)
-                    if state and "actions" in state:
-                        # Eye button check
-                        if any(w in selector.lower() for w in ["eye", "toggle", "password", "visibility", "icon"]):
-                            eye_action = next(
-                                (a for a in state["actions"] if a.get("kind") == "click" and (
-                                    a.get("node") == 2 or
-                                    "eye" in (a.get("label") or "").lower() or
-                                    "password" in (a.get("label") or "").lower() or
-                                    a.get("label") == "button"
-                                )),
-                                None
-                            )
-                            if eye_action:
-                                r = eye_action.get("rect", {})
-                                cx = r.get("x", 0) + r.get("w", 0) / 2
-                                cy = r.get("y", 0) + r.get("h", 0) / 2
-                                if cx > 0 and cy > 0:
-                                    await self._page.evaluate("({x, y}) => { if (window.__moveCursor) window.__moveCursor(x, y); if (window.__ripple) window.__ripple(x, y); }", {"x": cx, "y": cy})
-                                    await asyncio.sleep(0.2)
-                                await self._page.evaluate(
-                                    "(action) => { const e = window.__jevFast?.nodes.get(action.node); if (e) e.click(); }",
-                                    eye_action
-                                )
-                                await asyncio.sleep(0.35)
-                                return {"clicked": "jev-node:eye-toggle", "url": self._page.url}
-
-                        # General click match
-                        matching_action = next(
-                            (a for a in state["actions"] if a.get("kind") == "click" and (
-                                selector.lower() in (a.get("label") or "").lower() or
-                                (a.get("label") or "").lower() in selector.lower()
-                            )),
-                            None
-                        )
-                        if matching_action:
-                            r = matching_action.get("rect", {})
-                            cx = r.get("x", 0) + r.get("w", 0) / 2
-                            cy = r.get("y", 0) + r.get("h", 0) / 2
-                            if cx > 0 and cy > 0:
-                                await self._page.evaluate("({x, y}) => { if (window.__moveCursor) window.__moveCursor(x, y); if (window.__ripple) window.__ripple(x, y); }", {"x": cx, "y": cy})
-                                await asyncio.sleep(0.2)
-                            await self._page.evaluate(
-                                "(action) => { const e = window.__jevFast?.nodes.get(action.node); if (e) e.click(); }",
-                                matching_action
-                            )
-                            await asyncio.sleep(0.35)
-                            return {"clicked": f"jev-node:{matching_action['label']}", "url": self._page.url}
-                except Exception as jev_e:
-                    logger.debug(f"[JEV] Node click fallback error: {jev_e}")
 
                 return None
             try:
@@ -700,69 +773,7 @@ class PlaywrightMCPClient:
         logger.info(f"[MCP] {msg}")
         if self._is_real and self._page and self._runner:
             async def _do_select():
-                raw_parts = [s.strip() for s in selector.split(',') if s.strip()]
-                alts = list(raw_parts)
-                alts.extend(['select', 'select#unit', 'select[name*="unit" i]', '[role="combobox"]', '#unit-select', '#unit', 'button:has-text("Select Unit")'])
-                for sel in alts:
-                    try:
-                        loc = self._page.locator(sel).first
-                        await loc.wait_for(state="visible", timeout=1200)
-                        box = await loc.bounding_box()
-                        if box:
-                            cx = box["x"] + box["width"] / 2
-                            cy = box["y"] + box["height"] / 2
-                            await self._page.evaluate("({x, y, w, h}) => { if (window.__moveCursor) window.__moveCursor(x, y); if (window.__ripple) window.__ripple(x, y); if (window.__highlight) window.__highlight(x - w/2, y - h/2, w, h); }", {"x": cx, "y": cy, "w": box["width"], "h": box["height"]})
-                            await asyncio.sleep(0.2)
-
-                        tag_name = await loc.evaluate("e => e.tagName.toLowerCase()")
-                        if tag_name == "select":
-                            # Try selecting by label
-                            if label:
-                                try:
-                                    await loc.select_option(label=label, timeout=2000)
-                                    await asyncio.sleep(0.25)
-                                    return {"selected": sel, "label": label}
-                                except Exception:
-                                    pass
-                            
-                            # Try selecting by value
-                            if value:
-                                try:
-                                    await loc.select_option(value=value, timeout=2000)
-                                    await asyncio.sleep(0.25)
-                                    return {"selected": sel, "value": value}
-                                except Exception:
-                                    pass
-                            
-                            # Fallback: pick the first non-empty option
-                            options = await loc.locator("option").all()
-                            for opt in options:
-                                txt = (await opt.inner_text()).strip()
-                                val = await opt.get_attribute("value")
-                                if val and val != "":
-                                    await loc.select_option(value=val, timeout=2000)
-                                    await asyncio.sleep(0.25)
-                                    return {"selected": sel, "value": val, "label": txt}
-                        else:
-                            # Custom dropdown: click trigger, then click option item
-                            await loc.click(timeout=2000)
-                            await asyncio.sleep(0.3)
-                            if label:
-                                opt_loc = self._page.locator(f'[role="option"]:has-text("{label}"), li:has-text("{label}"), div:has-text("{label}")').first
-                                if await opt_loc.count() > 0:
-                                    obox = await opt_loc.bounding_box()
-                                    if obox:
-                                        ocx = obox["x"] + obox["width"] / 2
-                                        ocy = obox["y"] + obox["height"] / 2
-                                        await self._page.evaluate("({x, y}) => { if (window.__moveCursor) window.__moveCursor(x, y); if (window.__ripple) window.__ripple(x, y); }", {"x": ocx, "y": ocy})
-                                        await asyncio.sleep(0.15)
-                                    await opt_loc.click(timeout=2000)
-                                    await asyncio.sleep(0.25)
-                                    return {"selected": sel, "label": label}
-                    except Exception:
-                        pass
-
-                # Jev-ultrafast node select fallback
+                # ── 1. JEV-FIRST DIRECT NODE RESOLUTION (<25ms) ──
                 try:
                     from jev_ultrafast.browser import READ_STATE
                     from jev_ultrafast.model import action_space
@@ -786,7 +797,7 @@ class PlaywrightMCPClient:
                             cy = r.get("y", 0) + r.get("h", 0) / 2
                             if cx > 0 and cy > 0:
                                 await self._page.evaluate("({x, y}) => { if (window.__moveCursor) window.__moveCursor(x, y); if (window.__ripple) window.__ripple(x, y); }", {"x": cx, "y": cy})
-                                await asyncio.sleep(0.2)
+                                await asyncio.sleep(0.15)
                             await self._page.evaluate("""action => {
                                 const e = window.__jevFast?.nodes.get(action.node);
                                 if (!e) return false;
@@ -795,10 +806,70 @@ class PlaywrightMCPClient:
                                 e.dispatchEvent(new Event('change', {bubbles: true}));
                                 return true;
                             }""", chosen_act)
-                            await asyncio.sleep(0.25)
-                            return {"selected": f"jev-node:{chosen_act.get('label')}", "value": chosen_act.get("value")}
+                            await asyncio.sleep(0.2)
+                            logger.info(f"[JEV] Action Completed: select node {chosen_act.get('node')} '{chosen_act.get('label')}'")
+                            return {"selected": f"jev-node:{chosen_act.get('label')}", "value": chosen_act.get("value"), "source": "JEV"}
                 except Exception as jev_sel_e:
-                    logger.debug(f"[JEV] Node select fallback error: {jev_sel_e}")
+                    logger.debug(f"[JEV] Node select resolution error: {jev_sel_e}")
+
+                # ── 2. PLAYWRIGHT LOCATOR FALLBACK ──
+                raw_parts = [s.strip() for s in selector.split(',') if s.strip()]
+                alts = list(raw_parts)
+                alts.extend(['select', 'select#unit', 'select[name*="unit" i]', '[role="combobox"]', '#unit-select', '#unit', 'button:has-text("Select Unit")'])
+                for sel in alts:
+                    try:
+                        loc = self._page.locator(sel).first
+                        await loc.wait_for(state="visible", timeout=600)
+                        box = await loc.bounding_box()
+                        if box:
+                            cx = box["x"] + box["width"] / 2
+                            cy = box["y"] + box["height"] / 2
+                            await self._page.evaluate("({x, y, w, h}) => { if (window.__moveCursor) window.__moveCursor(x, y); if (window.__ripple) window.__ripple(x, y); if (window.__highlight) window.__highlight(x - w/2, y - h/2, w, h); }", {"x": cx, "y": cy, "w": box["width"], "h": box["height"]})
+                            await asyncio.sleep(0.15)
+
+                        tag_name = await loc.evaluate("e => e.tagName.toLowerCase()")
+                        if tag_name == "select":
+                            if label:
+                                try:
+                                    await loc.select_option(label=label, timeout=1000)
+                                    await asyncio.sleep(0.2)
+                                    return {"selected": sel, "label": label}
+                                except Exception:
+                                    pass
+                            
+                            if value:
+                                try:
+                                    await loc.select_option(value=value, timeout=1000)
+                                    await asyncio.sleep(0.2)
+                                    return {"selected": sel, "value": value}
+                                except Exception:
+                                    pass
+                            
+                            options = await loc.locator("option").all()
+                            for opt in options:
+                                txt = (await opt.inner_text()).strip()
+                                val = await opt.get_attribute("value")
+                                if val and val != "":
+                                    await loc.select_option(value=val, timeout=1000)
+                                    await asyncio.sleep(0.2)
+                                    return {"selected": sel, "value": val, "label": txt}
+                        else:
+                            await loc.click(timeout=1000)
+                            await asyncio.sleep(0.2)
+                            if label:
+                                opt_loc = self._page.locator(f'[role="option"]:has-text("{label}"), li:has-text("{label}"), div:has-text("{label}")').first
+                                if await opt_loc.count() > 0:
+                                    obox = await opt_loc.bounding_box()
+                                    if obox:
+                                        ocx = obox["x"] + obox["width"] / 2
+                                        ocy = obox["y"] + obox["height"] / 2
+                                        await self._page.evaluate("({x, y}) => { if (window.__moveCursor) window.__moveCursor(x, y); if (window.__ripple) window.__ripple(x, y); }", {"x": ocx, "y": ocy})
+                                        await asyncio.sleep(0.15)
+                                    await opt_loc.click(timeout=1000)
+                                    await asyncio.sleep(0.2)
+                                    return {"selected": sel, "label": label}
+                    except Exception:
+                        pass
 
                 return {"selected": selector, "fallback": True}
             try:

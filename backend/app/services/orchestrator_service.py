@@ -921,11 +921,18 @@ class RunManager:
 
                         if "password" in target_clean:
                             entered_pass = fill_val
-                            step_log = f"Filled {step.target} with '{redact(fill_val)}'"
                         else:
                             entered_user = fill_val
+
+                        t_fill_start = time.perf_counter()
+                        fill_res = await mcp.fill(step.target, fill_val)
+                        fill_lat_ms = max(1, int((time.perf_counter() - t_fill_start) * 1000))
+                        if isinstance(fill_res, dict) and fill_res.get("source") == "JEV":
+                            step_log = f"[JEV] Action Completed ({fill_lat_ms}ms): Filled {step.target} with '{redact(fill_val) if 'password' in target_clean else fill_val}'"
+                        elif "password" in target_clean:
+                            step_log = f"Filled {step.target} with '{redact(fill_val)}'"
+                        else:
                             step_log = f"Filled {step.target} with '{fill_val}'"
-                        await mcp.fill(step.target, fill_val)
                     
                     elif step.action == "click":
                         is_submit_click = any(w in (step.target or "").lower() for w in [
@@ -955,7 +962,9 @@ class RunManager:
                                     await mcp.select_option("select", label=user_unit)
                                     await asyncio.sleep(0.3)
 
+                        t_click_start = time.perf_counter()
                         click_res = await mcp.click(step.target)
+                        click_lat_ms = max(1, int((time.perf_counter() - t_click_start) * 1000))
                         if is_submit_click:
                             nav_state = await mcp.wait_for_navigation_after_click(timeout_ms=4000)
                             post_url = nav_state.get("url", "")
@@ -1001,10 +1010,13 @@ class RunManager:
                                     step_log = f"[HALTED] {intermediate['prompt']} — operator did not provide required input within 90s."
                                     tc_verdict = Verdict.FAIL
                             else:
-                                step_log = f"Clicked '{step.target}' → navigated to: {post_url} (Title: '{post_title}')"
+                                if isinstance(click_res, dict) and click_res.get("source") == "JEV":
+                                    step_log = f"[JEV] Action Completed ({click_lat_ms}ms): Clicked '{step.target}' → navigated to: {post_url} (Title: '{post_title}')"
+                                else:
+                                    step_log = f"Clicked '{step.target}' → navigated to: {post_url} (Title: '{post_title}')"
 
                             await event_bus.publish(LogEvent(
-                                source="MCP",
+                                source="JEV" if (isinstance(click_res, dict) and click_res.get("source") == "JEV") else "MCP",
                                 run_id=run_id,
                                 test_id=tc.id,
                                 step=step.index,
@@ -1012,11 +1024,19 @@ class RunManager:
                                 data={"action": "post_click_url", "url": post_url, "title": post_title},
                             ))
                         else:
-                            step_log = f"Clicked {step.target}"
+                            if isinstance(click_res, dict) and click_res.get("source") == "JEV":
+                                step_log = f"[JEV] Action Completed ({click_lat_ms}ms): Clicked {step.target}"
+                            else:
+                                step_log = f"Clicked {step.target}"
 
                     elif step.action == "select":
+                        t_sel_start = time.perf_counter()
                         select_res = await mcp.select_option(step.target, label=step.value)
-                        step_log = f"Selected '{step.value}' in {step.target}"
+                        sel_lat_ms = max(1, int((time.perf_counter() - t_sel_start) * 1000))
+                        if isinstance(select_res, dict) and select_res.get("source") == "JEV":
+                            step_log = f"[JEV] Action Completed ({sel_lat_ms}ms): Selected '{step.value}' in {step.target}"
+                        else:
+                            step_log = f"Selected '{step.value}' in {step.target}"
 
                     elif step.action == "assert_visibility":
                         vis = await mcp.inspect_password_visibility()
