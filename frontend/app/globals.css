@@ -1,0 +1,363 @@
+/* ============================================================
+   MOMUS404 — globals.css
+   Neo-Brutalist monochrome (main screen) +
+   Hermes Terminal (modal only, scoped to .hermes-modal)
+   ============================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Inter:wght@300;400;500;600;700;900&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Base reset ─────────────────────────────────────────────── */
+:root {
+  --nb-black: #000000;
+  --nb-white: #ffffff;
+  --nb-gray-100: #f5f5f5;
+  --nb-gray-200: #e5e5e5;
+  --nb-gray-400: #a3a3a3;
+  --nb-gray-600: #525252;
+
+  --herm-bg: #090A0F;
+  --herm-bg2: #0D0E11;
+  --herm-text: #E6EDF3;
+  --herm-muted: #6E7681;
+  --herm-green: #3FB950;
+  --herm-amber: #D29922;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  font-family: 'Inter', system-ui, sans-serif;
+  background: #ffffff;
+  color: #000000;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* ── Scrollbar (monochrome) ─────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #f5f5f5;
+}
+::-webkit-scrollbar-thumb {
+  background: #000;
+  border-radius: 0;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #333;
+}
+
+/* ── Focus rings ────────────────────────────────────────────── */
+*:focus-visible {
+  outline: 3px solid #000;
+  outline-offset: 2px;
+}
+
+/* ── Neo-brutalist component primitives ─────────────────────── */
+@layer components {
+
+  /* Buttons */
+  .btn-primary {
+    @apply bg-black text-white font-mono font-bold px-4 py-2
+           border-2 border-black
+           shadow-[4px_4px_0px_0px_#000000]
+           transition-transform duration-100 cursor-pointer
+           hover:bg-neutral-800
+           active:translate-x-0.5 active:translate-y-0.5
+           active:shadow-[2px_2px_0px_0px_#000000]
+           disabled:opacity-40 disabled:cursor-not-allowed
+           disabled:translate-x-0 disabled:translate-y-0;
+  }
+
+  .btn-secondary {
+    @apply bg-white text-black font-mono font-bold px-4 py-2
+           border-2 border-black
+           shadow-[4px_4px_0px_0px_#000000]
+           transition-transform duration-100 cursor-pointer
+           hover:bg-neutral-100
+           active:translate-x-0.5 active:translate-y-0.5
+           active:shadow-[2px_2px_0px_0px_#000000]
+           disabled:opacity-40 disabled:cursor-not-allowed
+           disabled:translate-x-0 disabled:translate-y-0;
+  }
+
+  /* Cards / panels */
+  .nb-card {
+    @apply bg-white border-[3px] border-black shadow-[4px_4px_0px_0px_#000000];
+  }
+
+  .nb-card-sm {
+    @apply bg-white border-2 border-black shadow-[2px_2px_0px_0px_#000000];
+  }
+
+  /* Inputs */
+  .nb-input {
+    @apply bg-white text-black font-mono text-sm px-3 py-2
+           border-2 border-black outline-none w-full
+           placeholder:text-neutral-400
+           focus:shadow-[4px_4px_0px_0px_#000000]
+           transition-shadow duration-100;
+  }
+
+  /* Status badges */
+  .badge-pass {
+    @apply font-mono text-xs font-bold px-2 py-0.5
+           bg-black text-white border border-black;
+  }
+
+  .badge-fail {
+    @apply font-mono text-xs font-bold px-2 py-0.5
+           bg-white text-black border-2 border-black
+           relative overflow-hidden;
+  }
+
+  .badge-retry {
+    @apply font-mono text-xs font-bold px-2 py-0.5
+           bg-neutral-200 text-black border border-black;
+  }
+
+  .badge-running {
+    @apply font-mono text-xs font-bold px-2 py-0.5
+           bg-white text-black border-2 border-black
+           animate-pulse;
+  }
+
+  .badge-idle {
+    @apply font-mono text-xs font-bold px-2 py-0.5
+           bg-neutral-100 text-neutral-600 border border-neutral-400;
+  }
+
+  .badge-mock {
+    @apply font-mono text-[10px] font-bold px-1.5 py-0.5
+           bg-neutral-200 text-neutral-600 border border-neutral-400;
+  }
+
+  /* Section header */
+  .section-label {
+    @apply font-mono text-xs font-bold tracking-widest text-neutral-500 uppercase mb-2;
+  }
+}
+
+/* ── Diagonal hatch pattern for FAIL badges ─────────────────── */
+.badge-fail::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: repeating-linear-gradient(
+    45deg,
+    transparent,
+    transparent 3px,
+    rgba(0, 0, 0, 0.15) 3px,
+    rgba(0, 0, 0, 0.15) 4px
+  );
+  pointer-events: none;
+}
+
+/* ── Active node pulse (architecture diagram) ───────────────── */
+@keyframes active-node-pulse {
+  0%, 100% {
+    border-color: #000;
+    box-shadow: 4px 4px 0px 0px #000;
+  }
+  50% {
+    border-color: #555;
+    box-shadow: 4px 4px 0px 0px #555, 0 0 0 2px #000;
+  }
+}
+
+.node-active {
+  animation: active-node-pulse 1.2s ease-in-out infinite;
+}
+
+/* ── Log terminal ───────────────────────────────────────────── */
+.log-terminal {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  background: #000;
+  color: #e5e5e5;
+  overflow-y: auto;
+  overflow-x: hidden;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.log-pass  { color: #e5e5e5; }
+.log-fail  { color: #a3a3a3; text-decoration: underline wavy; }
+.log-retry { color: #737373; }
+.log-heal  { color: #d4d4d4; font-style: italic; }
+.log-sys   { color: #737373; }
+
+/* ── VRAM progress bar ──────────────────────────────────────── */
+.vram-bar {
+  height: 10px;
+  background: #e5e5e5;
+  border: 1px solid #000;
+  position: relative;
+}
+.vram-fill {
+  height: 100%;
+  background: #000;
+  transition: width 0.5s ease;
+}
+
+/* ── Cursor blink ───────────────────────────────────────────── */
+.cursor-blink::after {
+  content: '█';
+  animation: blink 1s step-end infinite;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+/* ============================================================
+   HERMES TERMINAL MODAL STYLES
+   Scoped to .hermes-modal — obsidian dark theme
+   ============================================================ */
+
+.hermes-modal {
+  font-family: 'JetBrains Mono', monospace;
+  background: var(--herm-bg);
+  color: var(--herm-text);
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  overflow-y: auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 2rem 1rem;
+}
+
+.hermes-modal * {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.hermes-modal__inner {
+  background: var(--herm-bg2);
+  border: 1px solid var(--herm-muted);
+  width: 100%;
+  max-width: 820px;
+  padding: 2rem;
+  position: relative;
+}
+
+.hermes-modal__backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(9, 10, 15, 0.92);
+  z-index: -1;
+}
+
+.hermes-modal__ascii-logo {
+  color: var(--herm-green);
+  font-size: clamp(6px, 1.3vw, 12px);
+  line-height: 1.2;
+  white-space: pre;
+  overflow-x: auto;
+  margin-bottom: 1.5rem;
+}
+
+.hermes-modal h2 {
+  color: var(--herm-text);
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid var(--herm-muted);
+  padding-bottom: 0.5rem;
+}
+
+.hermes-modal p,
+.hermes-modal li {
+  color: var(--herm-muted);
+  font-size: 0.8rem;
+  line-height: 1.7;
+}
+
+.hermes-modal strong {
+  color: var(--herm-text);
+  font-weight: 600;
+}
+
+.hermes-modal .badge-green {
+  color: var(--herm-green);
+  border: 1px solid var(--herm-green);
+  padding: 0 0.4rem;
+  font-size: 0.7rem;
+}
+
+.hermes-modal .badge-amber {
+  color: var(--herm-amber);
+  border: 1px solid var(--herm-amber);
+  padding: 0 0.4rem;
+  font-size: 0.7rem;
+}
+
+.hermes-modal__divider {
+  border: none;
+  border-top: 1px solid var(--herm-muted);
+  margin: 1.25rem 0;
+}
+
+.hermes-modal__close-btn {
+  background: transparent;
+  color: var(--herm-text);
+  border: 1px solid var(--herm-muted);
+  padding: 0.4rem 1rem;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  cursor: pointer;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  transition: all 0.15s ease;
+}
+
+.hermes-modal__close-btn:hover {
+  background: var(--herm-text);
+  color: var(--herm-bg);
+  border-color: var(--herm-text);
+}
+
+/* Scan-line overlay for modal */
+.hermes-modal::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.05) 2px,
+    rgba(0, 0, 0, 0.05) 4px
+  );
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* ── Drag-drop zone ─────────────────────────────────────────── */
+.drop-zone {
+  @apply border-2 border-dashed border-black bg-nb-gray-100
+         flex flex-col items-center justify-center
+         cursor-pointer transition-colors duration-150
+         hover:bg-nb-gray-200;
+}
+
+.drop-zone.active {
+  @apply border-solid bg-nb-gray-200;
+  box-shadow: inset 2px 2px 0 0 #000;
+}

@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Build outputs
+.next/
+out/
+build/
+dist/
+
+# Environment and sensitive keys
+.env
+.env*.local
+*.env
+!*.env.example
+
+# Runtime artifacts and logs
+artifacts/
+reports/
+backend/artifacts/
+backend/reports/
+*.log
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
