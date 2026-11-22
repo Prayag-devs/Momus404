@@ -31,3 +31,9 @@ class GenerateTestRequest(BaseModel):
     preconditions: Optional[str] = ""
     steps: Optional[str] = ""
     expected_result: Optional[str] = ""
+    priority: Optional[str] = Priority.MEDIUM.value
+    tags: Optional[List[str]] = Field(default_factory=list)
+    target_url: Optional[str] = ""
+    username: Optional[str] = ""
+    password: Optional[str] = ""
+

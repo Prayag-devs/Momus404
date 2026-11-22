@@ -95,13 +95,20 @@ export const apiClient = {
     targetUrl: string,
     file: File | null,
     username: string,
-    password: string
+    password: string,
+    testCases?: TestCase[] | string
   ): Promise<IngestResponse> {
     const formData = new FormData();
     formData.append("target_url", targetUrl);
     formData.append("username", username);
     formData.append("password", password);
     if (file) formData.append("file", file);
+    if (testCases) {
+      formData.append(
+        "test_cases_json",
+        typeof testCases === "string" ? testCases : JSON.stringify(testCases)
+      );
+    }
 
     const url = `${API_BASE_URL}/api/ingest`;
     let res: Response;
@@ -148,11 +155,33 @@ export const apiClient = {
     return request(`/api/status/${runId}`);
   },
 
-  async generateTest(payload: Partial<TestCase>): Promise<{ steps: PlannedStep[] }> {
+  async generateTest(
+    payload: Partial<TestCase> & { target_url?: string; username?: string; password?: string }
+  ): Promise<{ test_case?: TestCase; steps: PlannedStep[] }> {
     return request("/api/generate-test", {
       method: "POST",
       body: JSON.stringify(payload),
     });
+  },
+
+  async exportSpec(testCases: TestCase[]): Promise<Blob> {
+    const url = `${API_BASE_URL}/api/export-spec`;
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(testCases),
+      });
+    } catch {
+      res = await fetch(getFallbackUrl(url), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(testCases),
+      });
+    }
+    if (!res.ok) throw new Error(`Export spec failed: ${await res.text()}`);
+    return res.blob();
   },
 
   async localCheck(

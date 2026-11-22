@@ -7,6 +7,7 @@ import HardwareMonitor from "@/components/HardwareMonitor";
 import ActiveLogTerminal from "@/components/ActiveLogTerminal";
 import RunResults from "@/components/RunResults";
 import MomusLoreModal from "@/components/MomusLoreModal";
+import GenerateTestModal from "@/components/GenerateTestModal";
 import LiveBrowserViewport from "@/components/LiveBrowserViewport";
 
 import {
@@ -19,6 +20,11 @@ import { apiClient } from "@/lib/api-client";
 
 export default function HomePage() {
   const [loreOpen, setLoreOpen] = useState(false);
+  const [generateOpen, setGenerateOpen] = useState(false);
+  const [generateTargetUrl, setGenerateTargetUrl] = useState("http://localhost:3000/login");
+  const [generateFile, setGenerateFile] = useState<File | null>(null);
+  const [generateUsername, setGenerateUsername] = useState("");
+  const [generatePassword, setGeneratePassword] = useState("");
   const [operatorInput, setOperatorInput] = useState("");
 
   // Custom Domain Hooks
@@ -46,17 +52,12 @@ export default function HomePage() {
     clearLogs();
   };
 
-  const handleGenerate = async (url: string, file: File | null) => {
-    if (file) {
-      try {
-        const uploadRes = await apiClient.uploadSpec(file);
-        if (uploadRes.test_cases.length > 0) {
-          await apiClient.generateTest(uploadRes.test_cases[0]);
-        }
-      } catch (err) {
-        console.warn("[HomePage] Generate test failed:", err);
-      }
-    }
+  const handleGenerate = (url: string, file: File | null, user = "", pass = "") => {
+    setGenerateTargetUrl(url || "http://localhost:3000/login");
+    setGenerateFile(file);
+    setGenerateUsername(user);
+    setGeneratePassword(pass);
+    setGenerateOpen(true);
   };
 
   // Derive active action, target, and URL from latest log event
@@ -210,6 +211,19 @@ export default function HomePage() {
 
       {/* ── Momus Dossier Lore Modal ── */}
       <MomusLoreModal isOpen={loreOpen} onClose={() => setLoreOpen(false)} />
+
+      {/* ── Test Generator & Action Plan Resolver Modal ── */}
+      <GenerateTestModal
+        isOpen={generateOpen}
+        onClose={() => setGenerateOpen(false)}
+        targetUrl={generateTargetUrl}
+        initialFile={generateFile}
+        username={generateUsername}
+        password={generatePassword}
+        onExecuteTest={(testCase, target) => {
+          executeRun(target, null, generateUsername, generatePassword, false, [testCase]);
+        }}
+      />
 
       {/* ── Persistent System Footer ── */}
       <footer className="mt-12 text-center text-xs font-mono text-neutral-500 space-y-1">

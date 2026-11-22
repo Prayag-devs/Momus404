@@ -58,6 +58,7 @@ async def ingest_test_run(
     username: str = Form(""),
     password: str = Form(""),
     file: Optional[UploadFile] = File(None),
+    test_cases_json: Optional[str] = Form(None),
     settings: Settings = Depends(get_app_settings),
     vault: OpenDotsVault = Depends(get_vault_dep),
     brain: AgentBrain = Depends(get_brain_dep),
@@ -79,7 +80,17 @@ async def ingest_test_run(
     _run_targets[run_id] = target_url
 
     test_cases: List[TestCase] = []
-    if file:
+    if test_cases_json:
+        try:
+            parsed = json.loads(test_cases_json)
+            if isinstance(parsed, list):
+                test_cases = [TestCase(**item) for item in parsed]
+            elif isinstance(parsed, dict):
+                test_cases = [TestCase(**parsed)]
+        except Exception as exc:
+            logger.warning(f"[INGEST] Failed to parse custom test_cases_json: {exc}")
+
+    if file and not test_cases:
         filename = _safe_filename(file.filename or "spec.xlsx")
         data = await file.read(settings.MAX_UPLOAD_BYTES + 1)
         if len(data) > settings.MAX_UPLOAD_BYTES:
@@ -97,6 +108,7 @@ async def ingest_test_run(
     if test_cases:
         steps = await brain.plan(test_cases[0])
         plan_preview = [s.model_dump() for s in steps]
+
 
     await bus.publish(LogEvent(
         source="SYSTEM",

@@ -60,15 +60,22 @@ export function useRunOrchestrator(onRunComplete?: () => void) {
       file: File | null,
       username: string,
       password: string,
-      dryRun = false
+      dryRun = false,
+      customTestCases?: TestCase[]
     ) => {
       setError(null);
       setIsRunning(true);
       setIsPaused(false);
 
       try {
-        // Step 1: Ingest spec, url, credentials
-        const ingestRes = await apiClient.ingest(targetUrl, file, username, password);
+        // Step 1: Ingest spec, url, credentials, or custom test cases
+        const ingestRes = await apiClient.ingest(
+          targetUrl,
+          file,
+          username,
+          password,
+          customTestCases
+        );
         const newRunId = ingestRes.run_id;
         setRunId(newRunId);
         setParsedCases(ingestRes.test_cases);

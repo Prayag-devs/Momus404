@@ -19,7 +19,7 @@ import type { TestCase } from "@/lib/api";
 interface ControlPanelProps {
   onRun: (url: string, file: File | null, username: string, password: string) => void;
   onDryRun: (url: string, file: File | null, username: string, password: string) => void;
-  onGenerate: (url: string, file: File | null) => void;
+  onGenerate: (url: string, file: File | null, username?: string, password?: string) => void;
   onPause?: () => void;
   onResume?: () => void;
   onStop?: () => void;
@@ -124,8 +124,9 @@ export default function ControlPanel({
   };
 
   const handleGenerate = () => {
-    if (!validateUrl(targetUrl)) return;
-    onGenerate(targetUrl, file);
+    const norm = normalizeUrl(targetUrl);
+    setTargetUrl(norm);
+    onGenerate(norm, file, username, password);
   };
 
   const clearAll = () => {
