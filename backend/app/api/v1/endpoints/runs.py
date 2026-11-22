@@ -165,6 +165,10 @@ async def trigger_run(
             await run_manager.execute_run(run_id, test_cases, target_url, session_id, req.dry_run)
         except Exception as exc:
             logger.exception(f"[API] Run {run_id} execution failed: {exc}")
+            run_status = run_manager._runs.get(run_id)
+            if run_status:
+                run_status.status = Verdict.FAIL
+                run_status.finished_at = datetime.now(timezone.utc)
         finally:
             vault.revoke(session_id)
 

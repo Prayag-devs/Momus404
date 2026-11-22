@@ -27,6 +27,8 @@ backend/reports/
 storage/
 backend/storage/
 *.log
+*.mp4
+
 
 # IDE & OS
 .vscode/

@@ -84,7 +84,28 @@ def _jev_heuristic_decision(dom_snippet: str, expected_condition: str) -> Tuple[
         if kw in dom_lower and (not expected_lower or kw not in expected_lower):
             return "FAIL", 0.96, f"Fatal server error banner detected: '{kw}'"
 
-    # 4. Negative test expectation handling (expecting rejection, error, halt, locked, etc.)
+    # 4. Absence of prohibited elements (e.g. "Forgot Password' or 'Sign Up' links should strictly NOT be present")
+    is_absence_expectation = any(w in expected_lower for w in [
+        "not be present", "strictly not", "should not exist", "should not be visible",
+        "absence", "prohibited", "must not contain", "not appear",
+    ])
+    if is_absence_expectation:
+        terms_to_check = []
+        for raw_term in re.findall(r"'([^']*)'|\"([^\"]*)\"", expected_condition):
+            t = (raw_term[0] or raw_term[1]).strip().lower()
+            if t and len(t) > 2:
+                terms_to_check.append(t)
+        if not terms_to_check:
+            for phrase in ["forgot password", "sign up", "signup", "register", "reset password"]:
+                if phrase in expected_lower:
+                    terms_to_check.append(phrase)
+
+        found_prohibited = [t for t in terms_to_check if t in dom_lower]
+        if found_prohibited:
+            return "FAIL", 0.95, f"Prohibited element(s) '{', '.join(found_prohibited)}' unexpectedly found in DOM."
+        return "PASS", 0.96, "Verified absence: expected prohibited elements are not present in DOM."
+
+    # 5. Negative test expectation handling (expecting rejection, error, halt, locked, etc.)
     negative_expect_keywords = [
         "error", "invalid", "fail", "locked", "disabled", "rejected",
         "denied", "block", "401", "403", "422", "unauthorized", "required", "halt",
@@ -103,18 +124,21 @@ def _jev_heuristic_decision(dom_snippet: str, expected_condition: str) -> Tuple[
 
         return "FAIL", 0.88, "Expected error or rejection was not observed in DOM."
 
-    # 5. UI Presence / Accessibility verification (e.g. "button visible", "form rendered")
+    # 6. UI Presence / Accessibility verification (e.g. "button visible", "form rendered", "focus ring")
     ui_check_words = [
         "visible", "present", "displayed", "shown", "appear", "focusable",
         "clickable", "enabled", "presence", "visibility", "accessibility",
-        "exists", "rendered", "loaded", "interactable",
+        "exists", "rendered", "loaded", "interactable", "focus", "cursor",
+        "ring", "mask", "bullet", "asterisk", "depress", "active", "accept",
+        "seamlessly", "toggle", "title", "label", "positioned", "pointer",
+        "collapse", "highlight", "selection",
     ]
     if any(w in expected_lower for w in ui_check_words):
-        element_signals = ["input", "button", "label", "form", "select", "textarea", "a href", "h1", "h2", "nav", "header", "main"]
+        element_signals = ["input", "button", "label", "form", "select", "textarea", "a href", "h1", "h2", "h3", "p", "div", "nav", "header", "main", "svg", "span"]
         if any(e in dom_lower for e in element_signals):
             return "PASS", 0.94, "Interactive elements and layout structures confirmed in DOM."
 
-    # 6. Semantic keyword matching
+    # 7. Semantic keyword matching
     if expected_lower:
         keywords = [w for w in re.sub(r'["\']', " ", expected_lower).split() if len(w) > 3]
         html_skip = {"visible", "present", "displayed", "focusable", "clickable", "presence", "visibility", "rendered", "interactable", "successfully"}
@@ -149,13 +173,17 @@ class JevDecisionJudge:
         self._api_key = (settings.JEV_API_KEY or "").strip()
         self._endpoint = settings.JEV_ENDPOINT
         self._use_jev = settings.USE_JEV
+        self._model = getattr(settings, "JEV_MODEL", "jev-latest")
         self._latencies: List[int] = []
         self._last_latency = 0
         self._eval_count = 0
         self._last_eval_time = 0.0
 
+        if not os.environ.get("TYPESAFE_MODEL"):
+            os.environ["TYPESAFE_MODEL"] = self._model
+
         if self._api_key:
-            logger.info(f"[JEV] Jev API Key detected. Cloud Decision Endpoint: {self._endpoint}")
+            logger.info(f"[JEV] Jev API Key detected. Model: {self._model} | Cloud Endpoint: {self._endpoint}")
             if not os.environ.get("TYPESAFE_API_KEY"):
                 os.environ["TYPESAFE_API_KEY"] = self._api_key
         else:

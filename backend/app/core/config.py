@@ -47,6 +47,7 @@ class Settings(BaseSettings):
 
     # Jev Autonomous Decision & Intent Engine
     USE_JEV: bool = True
+    JEV_MODEL: str = "jev-latest"
     JEV_API_KEY: str = ""
     JEV_ENDPOINT: str = "https://api.jev.ai/v1"
 

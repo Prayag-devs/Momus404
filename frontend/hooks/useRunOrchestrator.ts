@@ -22,6 +22,14 @@ export function useRunOrchestrator(onRunComplete?: () => void) {
   useEffect(() => {
     if (!isRunning || !runId) return;
 
+    // Immediately fetch initial status
+    apiClient.getStatus(runId)
+      .then(({ status }) => {
+        setRunStatus(status);
+        if (status.is_paused !== undefined) setIsPaused(status.is_paused);
+      })
+      .catch((err) => console.warn("[useRunOrchestrator] Initial status fetch error:", err));
+
     pollTimerRef.current = setInterval(async () => {
       try {
         const { status } = await apiClient.getStatus(runId);
@@ -39,7 +47,7 @@ export function useRunOrchestrator(onRunComplete?: () => void) {
       } catch (err) {
         console.warn("[useRunOrchestrator] Polling error:", err);
       }
-    }, 1000);
+    }, 500);
 
     return () => {
       if (pollTimerRef.current) clearInterval(pollTimerRef.current);

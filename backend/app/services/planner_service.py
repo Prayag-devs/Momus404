@@ -192,8 +192,19 @@ class AgentBrain:
         full_text = f"{title_lower}\n{steps_lower}\n{expected_lower}"
 
         clean_target = (target_url or "").strip()
+        is_login_test = (
+            any(k in title_lower for k in ["login", "email", "password", "unit", "sign in", "signin", "credential", "visibility", "masking", "eye icon", "dropdown", "system title"])
+            or any(k in steps_lower for k in ["email", "password", "unit", "login", "sign in", "signin", "leave blank", "submit"])
+        ) and not any(k in preconditions.lower() for k in ["logged in", "authenticated", "dashboard", "portal"])
+
         if clean_target:
-            start_url = clean_target
+            if is_login_test and "/dashboard" in clean_target.lower():
+                from urllib.parse import urlparse
+                parsed = urlparse(clean_target)
+                base_origin = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else clean_target.rstrip("/")
+                start_url = f"{base_origin}/login"
+            else:
+                start_url = clean_target
         elif "/verification" in preconditions.lower() and "logout" in title_lower:
             start_url = "/verification"
         else:
@@ -320,6 +331,64 @@ class AgentBrain:
             if not clean:
                 continue
             c_lower = clean.lower()
+            c_unquoted = re.sub(r"['\"]", "", c_lower)
+
+            # 0. Hover Actions
+            if "hover" in c_unquoted:
+                if any(w in c_unquoted for w in ["login", "submit", "sign in", "button"]):
+                    steps.append({
+                        "action": "hover",
+                        "target": 'button[type="submit"], button:has-text("Login"), button:has-text("Sign in"), #login-submit',
+                        "value": "",
+                        "expect": "Hovered over Login button",
+                    })
+                    continue
+                elif "eye" in c_unquoted:
+                    steps.append({
+                        "action": "hover",
+                        "target": 'button:has(svg):near(input[type="password"]), button:has(svg):near(input[type="text"]), input ~ button:has(svg), #toggle-password, button[aria-label*="password" i]',
+                        "value": "",
+                        "expect": "Hovered over eye icon",
+                    })
+                    continue
+
+            # 0b. Focus / Click inside input fields
+            if any(w in c_unquoted for w in ["click inside", "click in", "focus inside", "focus on"]):
+                if any(w in c_unquoted for w in ["email", "username"]):
+                    steps.append({
+                        "action": "click",
+                        "target": 'input[type="email"], input[name*="user" i], input[name*="email" i], #username',
+                        "value": "",
+                        "expect": "Focused email input field",
+                    })
+                    continue
+                elif "password" in c_unquoted:
+                    steps.append({
+                        "action": "click",
+                        "target": 'input[type="password"], input[name*="pass" i], #password',
+                        "value": "",
+                        "expect": "Focused password input field",
+                    })
+                    continue
+
+            # 0c. Copy / Paste Actions
+            if "paste" in c_unquoted or "copy" in c_unquoted:
+                if any(w in c_unquoted for w in ["email", "username"]):
+                    steps.append({
+                        "action": "fill",
+                        "target": 'input[type="email"], input[name*="user" i], input[name*="email" i], #username',
+                        "value": resolved_user,
+                        "expect": f"Pasted email ({resolved_user})",
+                    })
+                    continue
+                elif "password" in c_unquoted:
+                    steps.append({
+                        "action": "fill",
+                        "target": 'input[type="password"], input[name*="pass" i], #password',
+                        "value": resolved_pass,
+                        "expect": "Pasted password",
+                    })
+                    continue
 
             # 1. Email / Username Fields
             if any(w in c_lower for w in ["email", "username"]):
@@ -413,8 +482,12 @@ class AgentBrain:
                 "press enter", "hit enter", "hit login", "tap login", "submit the form", "submit form",
                 "click the login", "click the submit", "login button", "submit button"
             ]
-            is_click_submit = any(k in c_lower for k in submit_keywords) or c_lower.strip() in ["login", "submit", "sign in"]
-            if any(skip in c_lower for skip in ["observe", "navigate", "open", "url", "inspect", "check", "verify", "view", "presence", "field", "form"]):
+            is_click_submit = (
+                any(k in c_unquoted for k in submit_keywords) or
+                any(k in c_lower for k in submit_keywords) or
+                c_unquoted.strip() in ["login", "submit", "sign in", "click login button", "click the login button"]
+            )
+            if any(skip in c_unquoted for skip in ["observe", "navigate", "open", "url", "inspect", "presence", "visibility", "field focusability"]):
                 is_click_submit = False
 
             if is_click_submit:

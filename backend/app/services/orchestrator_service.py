@@ -502,19 +502,46 @@ class RunManager:
                     await shared_browser.close()
                     return status
 
+            entry_login_url = target_url
+            if shared_browser:
+                try:
+                    cur_u = await shared_browser.get_current_url()
+                    if cur_u and cur_u not in ("about:blank", ""):
+                        entry_login_url = cur_u
+                except Exception:
+                    pass
+
             try:
                 for tc in frontend_cases:
                     await self.check_pause_and_cancel(run_id)
                     status.current_test = f"[{tc.id}] {tc.title}"
-                    res = await self._execute_test_case(run_id, tc, target_url, session_id, dry_run, orch, shared_browser)
-                    results.append(res)
-                    status.results.append(res)
-                    status.progress = len(results) / len(test_cases)
-                    if res.verdict == Verdict.PASS_:
-                        status.passed += 1
-                    else:
+                    in_progress_tc = TestCaseResult(
+                        test_case_id=tc.id,
+                        title=tc.title,
+                        verdict=Verdict.RUNNING,
+                        steps=[],
+                        notes="Executing...",
+                    )
+                    status.results.append(in_progress_tc)
+                    try:
+                        res = await self._execute_test_case(run_id, tc, target_url, session_id, dry_run, orch, shared_browser, in_progress_tc, entry_login_url)
+                        results.append(res)
+                        if res.verdict == Verdict.PASS_:
+                            status.passed += 1
+                        else:
+                            status.failed += 1
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as tc_exc:
+                        logger.exception(f"[ENGINE] Test case {tc.id} execution failed with error: {tc_exc}")
+                        in_progress_tc.verdict = Verdict.FAIL
+                        in_progress_tc.notes = f"Execution error: {tc_exc}"
+                        in_progress_tc.error = str(tc_exc)
+                        results.append(in_progress_tc)
                         status.failed += 1
-                    status.tokens_saved = get_tokens_saved()
+                    finally:
+                        status.progress = len(results) / len(test_cases)
+                        status.tokens_saved = get_tokens_saved()
             except asyncio.CancelledError:
                 logger.info(f"[ENGINE] Phase 1 stopped for run {run_id}")
                 status.status = Verdict.SKIPPED
@@ -542,15 +569,33 @@ class RunManager:
                 for tc in backend_cases:
                     await self.check_pause_and_cancel(run_id)
                     status.current_test = f"[{tc.id}] {tc.title}"
-                    res = await self._execute_test_case(run_id, tc, target_url, session_id, dry_run, orch, None)
-                    results.append(res)
-                    status.results.append(res)
-                    status.progress = len(results) / len(test_cases)
-                    if res.verdict == Verdict.PASS_:
-                        status.passed += 1
-                    else:
+                    in_progress_tc = TestCaseResult(
+                        test_case_id=tc.id,
+                        title=tc.title,
+                        verdict=Verdict.RUNNING,
+                        steps=[],
+                        notes="Executing...",
+                    )
+                    status.results.append(in_progress_tc)
+                    try:
+                        res = await self._execute_test_case(run_id, tc, target_url, session_id, dry_run, orch, None, in_progress_tc, entry_login_url)
+                        results.append(res)
+                        if res.verdict == Verdict.PASS_:
+                            status.passed += 1
+                        else:
+                            status.failed += 1
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as tc_exc:
+                        logger.exception(f"[ENGINE] Backend test case {tc.id} execution failed with error: {tc_exc}")
+                        in_progress_tc.verdict = Verdict.FAIL
+                        in_progress_tc.notes = f"Execution error: {tc_exc}"
+                        in_progress_tc.error = str(tc_exc)
+                        results.append(in_progress_tc)
                         status.failed += 1
-                    status.tokens_saved = get_tokens_saved()
+                    finally:
+                        status.progress = len(results) / len(test_cases)
+                        status.tokens_saved = get_tokens_saved()
             except asyncio.CancelledError:
                 logger.info(f"[ENGINE] Phase 2 stopped for run {run_id}")
                 status.status = Verdict.SKIPPED
@@ -631,6 +676,8 @@ class RunManager:
         dry_run: bool,
         orch: OrchestratorAdapter,
         shared_mcp: Optional[PlaywrightMCPClient] = None,
+        in_progress_tc: Optional[TestCaseResult] = None,
+        entry_login_url: str = "",
     ) -> TestCaseResult:
         brain = get_brain()
         judge = get_judge()
@@ -833,6 +880,11 @@ class RunManager:
                         confidence=laya_res.get("confidence", 0.96),
                         latency_ms=lat,
                     ))
+                    if in_progress_tc is not None:
+                        in_progress_tc.steps = list(step_results)
+                        run_status_obj = self._runs.get(run_id)
+                        if run_status_obj:
+                            run_status_obj.current_step = f"Step {step.index}/{len(steps)}: {step.action.upper()}"
 
             if not case_notes:
                 case_notes = f"{'Passed' if tc_verdict == Verdict.PASS_ else 'Failed'}: {tc.expected_result[:60]}"
@@ -853,11 +905,45 @@ class RunManager:
                 hub = get_screencast_hub()
                 await mcp.start_screencast(lambda f: hub.broadcast_frame_sync(f, run_id))
 
+            is_login_test = (
+                any(k in tc.title.lower() for k in ["login", "email", "password", "unit", "sign in", "signin", "credential", "visibility", "masking", "eye icon", "dropdown", "system title"])
+                or any(k in tc.steps.lower() for k in ["email", "password", "unit", "login", "sign in", "signin", "leave blank", "submit"])
+            ) and not any(k in tc.preconditions.lower() for k in ["logged in", "authenticated", "dashboard", "portal"])
+
+            if is_shared and is_login_test:
+                current_u = await mcp.get_current_url()
+                current_u_lower = current_u.lower()
+                clean_entry = entry_login_url or target_url
+                if "/dashboard" in clean_entry.lower():
+                    from urllib.parse import urlparse as _urlp
+                    _p = _urlp(clean_entry)
+                    _orig = f"{_p.scheme}://{_p.netloc}" if _p.scheme and _p.netloc else clean_entry.rstrip("/")
+                    clean_entry = f"{_orig}/login"
+
+                is_away_from_login = any(w in current_u_lower for w in ["/dashboard", "/app", "/portal", "/overview", "/home"]) or ("/login" not in current_u_lower and "signin" not in current_u_lower and "/login" in clean_entry.lower())
+                if is_away_from_login:
+                    logger.info(f"[ENGINE] [{tc.id}] Requires clean unauthenticated login page. Resetting session and navigating to: {clean_entry}")
+                    await mcp.clear_session_and_return_to_login(clean_entry)
+
             vault = get_vault()
-            await vault.inject_auth_context(mcp, session_id, target_url)
+            if not is_login_test:
+                await vault.inject_auth_context(mcp, session_id, target_url)
 
             entered_user = ""
             entered_pass = ""
+            tags_lower = " ".join(tc.tags).lower()
+            expected_lower = tc.expected_result.lower()
+            is_negative_test = (
+                "negative" in tags_lower
+                or "fe-neg-" in tc.id.lower()
+                or "neg" in tc.id.lower()
+                or any(w in expected_lower for w in [
+                    "halts submission", "error banner", "login-error-banner",
+                    "invalid credentials", "validation prompt", "fails and error",
+                    "submission rejected", "disclosed", "not allowed", "should fail",
+                    "should not", "must not", "blocked", "rejected",
+                ])
+            )
 
             try:
                 for step in steps:
@@ -892,7 +978,7 @@ class RunManager:
                         if nav_target.startswith("http://") or nav_target.startswith("https://"):
                             full_url = nav_target
                         elif not nav_target or nav_target in ("/", "/login"):
-                            full_url = target_url
+                            full_url = entry_login_url if (is_login_test and entry_login_url) else target_url
                         else:
                             from urllib.parse import urlparse
                             parsed = urlparse(target_url)
@@ -901,8 +987,13 @@ class RunManager:
                             full_url = f"{base_origin}{target_path}"
                         
                         try:
-                            await mcp.navigate(full_url)
-                            step_log = f"Navigated to {full_url}"
+                            t_nav_start = time.perf_counter()
+                            nav_res = await mcp.navigate(full_url)
+                            nav_lat_ms = max(1, int((time.perf_counter() - t_nav_start) * 1000))
+                            if isinstance(nav_res, dict) and nav_res.get("source") == "JEV":
+                                step_log = f"[JEV] Action Completed ({nav_lat_ms}ms): Navigated to {full_url}"
+                            else:
+                                step_log = f"Navigated to {full_url}"
                         except Exception as nav_e:
                             step_error = f"Navigation failed: {nav_e}"
                             step_verdict = Verdict.FAIL
@@ -935,32 +1026,43 @@ class RunManager:
                             step_log = f"Filled {step.target} with '{fill_val}'"
                     
                     elif step.action == "click":
-                        is_submit_click = any(w in (step.target or "").lower() for w in [
-                            "submit", "login", "signin", "sign-in", "sign_in", "btn", "button"
-                        ])
+                        is_eye_or_toggle = any(w in (step.target or "").lower() for w in ["eye", "toggle", "mask", "reveal", "show/hide"])
+                        is_submit_click = (
+                            not is_eye_or_toggle
+                            and any(w in (step.target or "").lower() for w in [
+                                "submit", "login", "signin", "sign-in", "sign_in", "type=\"submit\"", "type='submit'"
+                            ])
+                        )
                         if is_submit_click:
                             # Pre-check: if unit dropdown is present and unselected, prompt the user first!
                             unit_req = await mcp.check_unselected_unit_dropdown()
                             if unit_req:
-                                prompt_msg = unit_req["prompt"]
-                                logger.info(f"[ENGINE] Prompting operator for unit selection: {prompt_msg}")
-                                await event_bus.publish(LogEvent(
-                                    source="ENGINE",
-                                    run_id=run_id,
-                                    test_id=tc.id,
-                                    step=step.index,
-                                    message=f"[{tc.id}] [ACTION REQUIRED: UNIT] {prompt_msg}",
-                                    data={"action": "prompt_user_input", "type": "unit", "prompt": prompt_msg}
-                                ))
-                                user_unit = await self.request_user_input(
-                                    run_id=run_id,
-                                    input_type="unit",
-                                    prompt_message=prompt_msg,
-                                    timeout_s=90.0,
-                                )
-                                if user_unit and user_unit != "__CANCELLED__":
-                                    await mcp.select_option("select", label=user_unit)
+                                cached_unit = self.get_remembered_input(run_id, "unit")
+                                if cached_unit:
+                                    logger.info(f"[ENGINE] Reusing remembered unit: '{cached_unit}' without re-prompting")
+                                    await mcp.select_option("select", label=cached_unit)
                                     await asyncio.sleep(0.3)
+                                else:
+                                    prompt_msg = unit_req["prompt"]
+                                    logger.info(f"[ENGINE] Prompting operator for unit selection: {prompt_msg}")
+                                    await event_bus.publish(LogEvent(
+                                        source="ENGINE",
+                                        run_id=run_id,
+                                        test_id=tc.id,
+                                        step=step.index,
+                                        message=f"[{tc.id}] [ACTION REQUIRED: UNIT] {prompt_msg}",
+                                        data={"action": "prompt_user_input", "type": "unit", "prompt": prompt_msg}
+                                    ))
+                                    user_unit = await self.request_user_input(
+                                        run_id=run_id,
+                                        input_type="unit",
+                                        prompt_message=prompt_msg,
+                                        timeout_s=90.0,
+                                    )
+                                    if user_unit and user_unit != "__CANCELLED__":
+                                        self.remember_input(run_id, "unit", user_unit)
+                                        await mcp.select_option("select", label=user_unit)
+                                        await asyncio.sleep(0.3)
 
                         t_click_start = time.perf_counter()
                         click_res = await mcp.click(step.target)
@@ -1028,6 +1130,12 @@ class RunManager:
                                 step_log = f"[JEV] Action Completed ({click_lat_ms}ms): Clicked {step.target}"
                             else:
                                 step_log = f"Clicked {step.target}"
+
+                    elif step.action == "hover":
+                        t_hov_start = time.perf_counter()
+                        await mcp.hover(step.target)
+                        hov_lat_ms = max(1, int((time.perf_counter() - t_hov_start) * 1000))
+                        step_log = f"Hovered over {step.target} ({hov_lat_ms}ms)"
 
                     elif step.action == "select":
                         t_sel_start = time.perf_counter()
@@ -1185,32 +1293,13 @@ class RunManager:
                             step_log = f"SECURITY DEFECT: Injection payload ('{entered_user}') accepted — no sanitization error; at {current_url}"
                             case_notes = "Failed: Injection payload accepted without error."
                         elif is_still_on_login_page:
-                            # Invalidate cached unit and otp because the authentication failed
-                            self.invalidate_remembered_input(run_id, "unit")
-                            self.invalidate_remembered_input(run_id, "otp")
-
                             # Check if unit dropdown needs selection before declaring failure
                             unit_req = await mcp.check_unselected_unit_dropdown()
                             if unit_req:
-                                prompt_msg = unit_req["prompt"]
-                                logger.info(f"[ENGINE] Prompting operator for unit selection: {prompt_msg}")
-                                await event_bus.publish(LogEvent(
-                                    source="ENGINE",
-                                    run_id=run_id,
-                                    test_id=tc.id,
-                                    step=step.index,
-                                    message=f"[{tc.id}] [ACTION REQUIRED: UNIT] {prompt_msg}",
-                                    data={"action": "prompt_user_input", "type": "unit", "prompt": prompt_msg}
-                                ))
-                                user_unit = await self.request_user_input(
-                                    run_id=run_id,
-                                    input_type="unit",
-                                    prompt_message=prompt_msg,
-                                    timeout_s=90.0,
-                                    force_ask=True,
-                                )
-                                if user_unit and user_unit != "__CANCELLED__":
-                                    await mcp.select_option("select", label=user_unit)
+                                cached_unit = self.get_remembered_input(run_id, "unit")
+                                if cached_unit:
+                                    logger.info(f"[ENGINE] Applying remembered unit '{cached_unit}' for {tc.id}")
+                                    await mcp.select_option("select", label=cached_unit)
                                     await asyncio.sleep(0.3)
                                     await mcp.click('button[type="submit"]')
                                     post_nav = await mcp.wait_for_navigation_after_click(timeout_ms=5000)
@@ -1221,6 +1310,37 @@ class RunManager:
                                     _is_login_url = any(lp in current_url_lower for lp in ["/login", "signin", "sign-in"])
                                     _has_password_field = any(p in dom_lower for p in ['type="password"', 'name="password"', 'id="password"'])
                                     is_still_on_login_page = (_is_login_url and _has_password_field and _expects_navigation)
+                                else:
+                                    prompt_msg = unit_req["prompt"]
+                                    logger.info(f"[ENGINE] Prompting operator for unit selection: {prompt_msg}")
+                                    await event_bus.publish(LogEvent(
+                                        source="ENGINE",
+                                        run_id=run_id,
+                                        test_id=tc.id,
+                                        step=step.index,
+                                        message=f"[{tc.id}] [ACTION REQUIRED: UNIT] {prompt_msg}",
+                                        data={"action": "prompt_user_input", "type": "unit", "prompt": prompt_msg}
+                                    ))
+                                    user_unit = await self.request_user_input(
+                                        run_id=run_id,
+                                        input_type="unit",
+                                        prompt_message=prompt_msg,
+                                        timeout_s=90.0,
+                                        force_ask=False,
+                                    )
+                                    if user_unit and user_unit != "__CANCELLED__":
+                                        self.remember_input(run_id, "unit", user_unit)
+                                        await mcp.select_option("select", label=user_unit)
+                                        await asyncio.sleep(0.3)
+                                        await mcp.click('button[type="submit"]')
+                                        post_nav = await mcp.wait_for_navigation_after_click(timeout_ms=5000)
+                                        current_url = post_nav.get("url", current_url)
+                                        current_url_lower = current_url.lower()
+                                        dom_tree = await mcp.get_accessible_tree()
+                                        dom_lower = dom_tree.lower()
+                                        _is_login_url = any(lp in current_url_lower for lp in ["/login", "signin", "sign-in"])
+                                        _has_password_field = any(p in dom_lower for p in ['type="password"', 'name="password"', 'id="password"'])
+                                        is_still_on_login_page = (_is_login_url and _has_password_field and _expects_navigation)
 
                             if is_still_on_login_page:
                                 step_verdict = Verdict.FAIL
@@ -1299,6 +1419,15 @@ class RunManager:
                                     step_verdict = Verdict.PASS_
                                     step_error = None
                                     step_log += f" [SELF-HEALED: {healed_step.target}]"
+                                elif healed_step.action == "assert_visibility":
+                                    vis = await mcp.inspect_password_visibility()
+                                    expected_type = (step.value or "text").lower()
+                                    actual_type = vis.get("type", "password").lower()
+                                    is_vis = vis.get("visible", False)
+                                    if actual_type == expected_type or (expected_type == "text" and is_vis) or (expected_type == "password" and not is_vis):
+                                        step_verdict = Verdict.PASS_
+                                        step_error = None
+                                        step_log += f" [SELF-HEALED: {actual_type}]"
                         except Exception as heal_err:
                             logger.warning(f"[ENGINE] Self-healing error: {heal_err}")
 
@@ -1333,6 +1462,12 @@ class RunManager:
                         mock=mcp._mock,
                     ))
 
+                    if in_progress_tc is not None:
+                        in_progress_tc.steps = list(step_results)
+                        run_status_obj = self._runs.get(run_id)
+                        if run_status_obj:
+                            run_status_obj.current_step = f"Step {step.index}/{len(steps)}: {step.action.upper()}"
+
                     if step_verdict == Verdict.FAIL:
                         tc_verdict = Verdict.FAIL
                         if "neg" not in tc.id.lower() and not is_negative_test:
@@ -1344,7 +1479,7 @@ class RunManager:
                     await mcp.close()
 
         duration = max(1, int((time.perf_counter() - start_time) * 1000))
-        return TestCaseResult(
+        final_res = TestCaseResult(
             test_case_id=tc.id,
             title=tc.title,
             verdict=tc_verdict,
@@ -1354,6 +1489,14 @@ class RunManager:
             notes=case_notes,
             logs=case_logs,
         )
+        if in_progress_tc is not None:
+            in_progress_tc.verdict = tc_verdict
+            in_progress_tc.steps = list(step_results)
+            in_progress_tc.heal_count = total_heals
+            in_progress_tc.duration_ms = duration
+            in_progress_tc.notes = case_notes
+            in_progress_tc.logs = case_logs
+        return final_res
 
     async def cancel_run(self, run_id: str) -> bool:
         self._cancelled_runs.add(run_id)
